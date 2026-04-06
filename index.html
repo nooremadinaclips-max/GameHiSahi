@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Garden Bird Adventure</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a202c;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
+        }
+        canvas {
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            border-radius: 12px;
+            cursor: pointer;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+            user-select: none;
+        }
+        .score-badge {
+            background-color: #ef4444; /* Red color box */
+            color: white;
+            padding: 4px 12px;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 1.25rem;
+            box-shadow: 0 2px 10px rgba(239, 68, 68, 0.4);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        #start-msg-container {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Score Board -->
+    <div id="ui-layer">
+        <div class="score-badge">
+            <span class="text-sm opacity-80">SCORE:</span>
+            <span id="score-display">0</span>
+        </div>
+    </div>
+
+    <!-- Start/Game Over Messages -->
+    <div id="start-msg-container">
+        <div id="start-msg" class="text-white text-xl animate-bounce bg-black/40 backdrop-blur-sm px-8 py-4 rounded-full border border-white/20 text-center">
+            Tap to Start
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score-display');
+        const startMsg = document.getElementById('start-msg');
+
+        // Audio System (Web Audio API)
+        let audioCtx = null;
+        let bgmOscillator = null;
+
+        function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        function playJumpSound() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.1);
+        }
+
+        function playScoreSound() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, audioCtx.currentTime); 
+            osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.05);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.3);
+        }
+
+        // New Sound for Game Over (Crash Tone)
+        function playDeathSound() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(220, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.5);
+            gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.5);
+        }
+
+        function playBGM() {
+            if (!audioCtx || bgmOscillator) return;
+            const notes = [261.63, 329.63, 392.00, 523.25];
+            let noteIdx = 0;
+
+            const playNote = () => {
+                if (gameOver || !gameActive) return;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(notes[noteIdx], audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.5);
+                noteIdx = (noteIdx + 1) % notes.length;
+                setTimeout(playNote, 600);
+            };
+            playNote();
+        }
+
+        const baseWidth = 400;
+        const baseHeight = 600;
+        canvas.width = baseWidth;
+        canvas.height = baseHeight;
+
+        const GRAVITY = 0.25;      
+        const JUMP = -5.2;         
+        const PIPE_SPEED = 2.2;    
+        const PIPE_SPACING_FRAMES = 100; 
+        const PIPE_GAP = 160;      
+        const PIPE_WIDTH = 60;
+        const GROUND_HEIGHT = 80;
+        const WATER_HEIGHT = 40;
+
+        let bird = { x: 80, y: 300, w: 34, h: 26, velocity: 0, rotation: 0 };
+        let pipes = [];
+        let score = 0;
+        let frame = 0;
+        let gameActive = false;
+        let gameOver = false;
+        let waterOffset = 0;
+        let gardenOffset = 0;
+
+        const birdSVG = `data:image/svg+xml;base64,${btoa('<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><circle cx="50" cy="50" r="45" fill="#FFD700"/><circle cx="70" cy="40" r="8" fill="white"/><circle cx="72" cy="40" r="4" fill="black"/><path d="M75 60 Q 90 60 85 70 Q 75 80 65 70 Z" fill="#FF4500"/><path d="M20 50 Q 5 40 20 30" stroke="white" stroke-width="5" fill="none"/></svg>')}`;
+        const birdImg = new Image();
+        birdImg.src = birdSVG;
+
+        function init() {
+            bird.y = 300;
+            bird.velocity = 0;
+            pipes = [];
+            score = 0;
+            frame = 0;
+            scoreEl.innerText = "0";
+            startMsg.innerHTML = "Tap to Start";
+            startMsg.parentElement.style.opacity = "1";
+            gameOver = false;
+            gameActive = false;
+            loop();
+        }
+
+        function spawnPipe() {
+            const minH = 60;
+            const maxH = canvas.height - GROUND_HEIGHT - WATER_HEIGHT - PIPE_GAP - minH;
+            const topH = Math.floor(Math.random() * (maxH - minH + 1)) + minH;
+            pipes.push({
+                x: canvas.width,
+                top: topH,
+                bottom: canvas.height - topH - PIPE_GAP - WATER_HEIGHT - GROUND_HEIGHT,
+                passed: false
+            });
+        }
+
+        function jump() {
+            initAudio();
+            if (gameOver) {
+                init();
+                return;
+            }
+            if (!gameActive) {
+                gameActive = true;
+                startMsg.parentElement.style.opacity = "0";
+                playBGM();
+            }
+            bird.velocity = JUMP;
+            playJumpSound();
+        }
+
+        window.addEventListener('keydown', (e) => { if(e.code === 'Space' || e.code === 'ArrowUp') jump(); });
+        canvas.addEventListener('mousedown', jump);
+        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); jump(); });
+
+        function update() {
+            if (!gameActive || gameOver) return;
+
+            bird.velocity += GRAVITY;
+            bird.y += bird.velocity;
+            
+            if (bird.velocity < 0) {
+                bird.rotation = -0.3;
+            } else {
+                bird.rotation = Math.min(Math.PI / 2, bird.rotation + 0.05);
+            }
+
+            if (bird.y + bird.h/2 > canvas.height - WATER_HEIGHT - GROUND_HEIGHT) {
+                triggerGameOver();
+            }
+            if (bird.y < 0) bird.y = 0;
+
+            if (frame % PIPE_SPACING_FRAMES === 0) {
+                spawnPipe();
+            }
+
+            for (let i = pipes.length - 1; i >= 0; i--) {
+                let p = pipes[i];
+                p.x -= PIPE_SPEED;
+
+                if (bird.x + bird.w/2 - 5 > p.x && bird.x - bird.w/2 + 5 < p.x + PIPE_WIDTH) {
+                    if (bird.y - bird.h/2 + 5 < p.top || bird.y + bird.h/2 - 5 > p.top + PIPE_GAP) {
+                        triggerGameOver();
+                    }
+                }
+
+                if (!p.passed && p.x + PIPE_WIDTH < bird.x) {
+                    p.passed = true;
+                    score++;
+                    scoreEl.innerText = score;
+                    playScoreSound();
+                }
+
+                if (p.x + PIPE_WIDTH < -50) pipes.splice(i, 1);
+            }
+
+            waterOffset = (waterOffset + 1.5) % 40;
+            gardenOffset = (gardenOffset + 0.5) % 400;
+            frame++;
+        }
+
+        function triggerGameOver() {
+            if (gameOver) return;
+            gameOver = true;
+            playDeathSound(); // Play the new death tone
+            startMsg.innerHTML = "GAME OVER<br><span style='font-size:0.9rem; opacity:0.8;'>Tap to Restart</span>";
+            startMsg.parentElement.style.opacity = "1";
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            skyGrad.addColorStop(0, '#87CEEB');
+            skyGrad.addColorStop(1, '#E0F6FF');
+            ctx.fillStyle = skyGrad;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "#FFF7AD";
+            ctx.beginPath();
+            ctx.arc(320, 80, 45, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#FFD700";
+            ctx.beginPath();
+            ctx.arc(320, 80, 35, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = "#4ade80";
+            for (let i = 0; i < 4; i++) {
+                ctx.beginPath();
+                ctx.arc((i * 200) - gardenOffset, canvas.height - 120, 100, 0, Math.PI, true);
+                ctx.fill();
+            }
+
+            pipes.forEach(p => {
+                ctx.fillStyle = "#166534";
+                ctx.fillRect(p.x, 0, PIPE_WIDTH, p.top);
+                ctx.fillStyle = "#064e3b";
+                ctx.fillRect(p.x - 4, p.top - 20, PIPE_WIDTH + 8, 20); 
+
+                const botY = p.top + PIPE_GAP;
+                const botH = canvas.height - botY - WATER_HEIGHT - GROUND_HEIGHT;
+                ctx.fillStyle = "#166534";
+                ctx.fillRect(p.x, botY, PIPE_WIDTH, botH);
+                ctx.fillStyle = "#064e3b";
+                ctx.fillRect(p.x - 4, botY, PIPE_WIDTH + 8, 20);
+            });
+
+            ctx.fillStyle = "#14532d";
+            ctx.fillRect(0, canvas.height - WATER_HEIGHT - GROUND_HEIGHT, canvas.width, GROUND_HEIGHT);
+            
+            ctx.fillStyle = "#3b82f6";
+            ctx.fillRect(0, canvas.height - WATER_HEIGHT, canvas.width, WATER_HEIGHT);
+            ctx.strokeStyle = "rgba(255,255,255,0.4)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = -40; i < canvas.width + 40; i += 20) {
+                ctx.arc(i + waterOffset, canvas.height - WATER_HEIGHT, 10, 0, Math.PI);
+            }
+            ctx.stroke();
+
+            ctx.save();
+            ctx.translate(bird.x, bird.y);
+            ctx.rotate(bird.rotation);
+            ctx.drawImage(birdImg, -bird.w/2, -bird.h/2, bird.w, bird.h);
+            ctx.restore();
+        }
+
+        function loop() {
+            update();
+            draw();
+            if (!gameOver || !gameActive) {
+                requestAnimationFrame(loop);
+            }
+        }
+
+        birdImg.onload = () => {
+            init();
+        };
+    </script>
+</body>
+</html>
